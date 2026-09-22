@@ -1,0 +1,33 @@
+{
+  "entities": {
+    "users": {
+      "title": "User Profile",
+      "description": "Stores user preferences, onboarding info and settings",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string" },
+        "goals": { "type": "array", "items": { "type": "string" } },
+        "sleepSchedule": { "type": "string" },
+        "workingHours": { "type": "string" },
+        "preferredProductivityTime": { "type": "string" },
+        "planningStyle": { "type": "string" }
+      },
+      "required": ["email", "name"]
+    },
+    "tasks": {
+      "title": "Tasks",
+      "description": "Task management items",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "priority": { "type": "string" },
+        "category": { "type": "string font" },
+        "completed": { "type": "boolean" }
+      },
+      "required": ["userId", "title"]
+    }
+  }
+}

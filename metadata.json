@@ -1,0 +1,6 @@
+{
+  "name": "Orbit AI",
+  "description": "AI-powered life operating system that intelligently organizes tasks, schedules, habits, fitness, meals, bills, notes, and long-term goals.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
