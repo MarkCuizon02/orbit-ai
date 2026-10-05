@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { 
   X, 
   Plus, 
@@ -27,6 +27,7 @@ import { inferCategoryFromTitle } from "../lib/tagger";
 
 interface CommandPaletteProps {
   isOpen: boolean;
+  initialType?: AddType;
   onClose: () => void;
   onAddTask: (t: Omit<Task, "id" | "createdAt">) => void;
   onAddHabit: (h: Omit<Habit, "id" | "completedToday" | "historyMap">) => void;
@@ -43,6 +44,7 @@ type AddType = "task" | "habit" | "workout" | "meal" | "bill" | "note" | "goal" 
 
 export const CommandPalette: React.FC<CommandPaletteProps> = ({
   isOpen,
+  initialType,
   onClose,
   onAddTask,
   onAddHabit,
@@ -54,7 +56,11 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   onAskCopilot,
   darkMode,
 }) => {
-  const [activeType, setActiveType] = useState<AddType>("task");
+  const [activeType, setActiveType] = useState<AddType>(initialType ?? "task");
+
+  useEffect(() => {
+    if (isOpen && initialType) setActiveType(initialType);
+  }, [isOpen, initialType]);
 
   // Task form state
   const [taskTitle, setTaskTitle] = useState("");
@@ -154,6 +160,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (activeType === "note" && !noteTitle.trim()) return;
     if (activeType === "task" && taskTitle.trim()) {
       const inferred = inferCategoryFromTitle(taskTitle);
       const categoryToUse = taskCategory;
@@ -223,7 +230,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     } else if (activeType === "note" && noteTitle.trim()) {
       onAddNote({
         title: noteTitle.trim(),
-        content: noteContent || "Quick note entry...",
+        content: noteContent.trim(),
         category: "Personal",
         tags: ["quick-note"],
         isPinned: false,
@@ -666,7 +673,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
             </button>
             <button
               type="submit"
-              className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs flex items-center gap-1.5 shadow-lg shadow-indigo-600/30 transition-all transform active:scale-95"
+              disabled={activeType === "note" && !noteTitle.trim()}
+              className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs flex items-center gap-1.5 shadow-lg shadow-indigo-600/30 transition-all transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Plus className="w-4 h-4" />
               <span>{activeType === "ai" ? "Ask Orbit AI" : `Add ${activeType}`}</span>

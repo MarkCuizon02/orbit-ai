@@ -38,6 +38,9 @@ async function startServer() {
       const ai = getAi();
 
       if (!ai) {
+        if (action === "note_summarize") {
+          return res.status(503).json({ success: false, error: "AI note extraction is unavailable." });
+        }
         // Fallback intelligent generator if key is not attached yet
         return res.json({
           success: true,
@@ -63,7 +66,7 @@ Provide concise, direct, professional responses. Avoid raw markdown symbols like
       } else if (action === "goal_roadmap") {
         systemInstruction += ` Break down the user's long-term goal into 3 strategic phases with key milestone metrics and 3 immediate daily habits.`;
       } else if (action === "note_summarize") {
-        systemInstruction += ` Summarize the note cleanly and extract 2-4 concrete action items that should be added to the user's Orbit task list.`;
+        systemInstruction += ` Summarize only the supplied note content. Return a plain paragraph under Summary: and a numbered list under Action Items:. Extract only concrete actions supported by the note. If there are no actions, leave that list empty. Never invent tasks.`;
       } else if (action === "task_analytics") {
         systemInstruction += ` You are an executive productivity analyst for Orbit AI. Analyze the user's task completion trends, category distributions, priority focus, and time estimates. Provide a concise productivity insight summary, highlight completion patterns, and give 2 high-impact actionable strategies to improve task throughput.`;
       } else if (action === "weekly_insight") {
@@ -111,6 +114,9 @@ Write in concise, professional executive prose with clear bullet points. Cover:
       });
     } catch (err: any) {
       console.error("Orbit AI Error:", err);
+      if (req.body.action === "note_summarize") {
+        return res.status(502).json({ success: false, error: "AI note extraction failed." });
+      }
       // Return helpful fallback response if API call fails
       return res.json({
         success: true,
