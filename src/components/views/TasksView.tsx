@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import { Task, Category, PriorityLevel } from "../../types";
 import { inferCategoryFromTitle } from "../../lib/tagger";
 import { TaskQuickLookModal } from "../TaskQuickLookModal";
@@ -80,7 +80,9 @@ export const TasksView: React.FC<TasksViewProps> = ({
   const [showArchived, setShowArchived] = useState(false);
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
   const [loadingAiId, setLoadingAiId] = useState<string | null>(null);
-  const [quickLookTask, setQuickLookTask] = useState<Task | null>(null);
+  const [quickLookTaskId, setQuickLookTaskId] = useState<string | null>(null);
+  const quickLookTask = tasks.find((task) => task.id === quickLookTaskId) ?? null;
+  const newTaskInputRef = useRef<HTMLInputElement>(null);
 
   // Drag and Drop state
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
@@ -98,9 +100,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
     setNewTaskTitle(val);
     if (!isCategoryManual) {
       const inferred = inferCategoryFromTitle(val);
-      if (val.trim() && inferred.matchedKeywords.length > 0) {
-        setNewTaskCategory(inferred.category);
-      }
+      setNewTaskCategory(inferred.category);
     }
   };
 
@@ -110,34 +110,53 @@ export const TasksView: React.FC<TasksViewProps> = ({
     const matchesArchived = showArchived ? Boolean(t.archived) : !t.archived;
     const matchesCategory = selectedCategory === "All" || t.category === selectedCategory;
     const matchesPriority = selectedPriority === "All" || t.priority === selectedPriority;
-    const matchesSearch = t.title.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesSearch = t.title.toLowerCase().includes(searchQuery.trim().toLowerCase());
     return matchesArchived && matchesCategory && matchesPriority && matchesSearch;
   });
 
   // Task Reorder Up/Down logic
+  const reorderVisibleTasks = (taskId: string, targetId: string) => {
+    if (!onReorderTasks || taskId === targetId) return;
+    const currentIndex = filteredTasks.findIndex((task) => task.id === taskId);
+    const targetIndex = filteredTasks.findIndex((task) => task.id === targetId);
+    if (currentIndex === -1 || targetIndex === -1) return;
+
+    const reordered = [...filteredTasks];
+    const [moved] = reordered.splice(currentIndex, 1);
+    reordered.splice(targetIndex, 0, moved);
+    const visibleIds = new Set(filteredTasks.map((task) => task.id));
+    let visibleIndex = 0;
+    onReorderTasks(tasks.map((task) => visibleIds.has(task.id) ? reordered[visibleIndex++] : task));
+  };
+
   const handleMoveTask = (taskId: string, direction: "up" | "down") => {
-    const currentIndex = tasks.findIndex((t) => t.id === taskId);
+    const currentIndex = filteredTasks.findIndex((t) => t.id === taskId);
     if (currentIndex === -1) return;
     const targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
-    if (targetIndex < 0 || targetIndex >= tasks.length) return;
-
-    const updated = [...tasks];
-    const [moved] = updated.splice(currentIndex, 1);
-    updated.splice(targetIndex, 0, moved);
-
-    if (onReorderTasks) {
-      onReorderTasks(updated);
-    }
+    if (targetIndex < 0 || targetIndex >= filteredTasks.length) return;
+    reorderVisibleTasks(taskId, filteredTasks[targetIndex].id);
   };
 
   // Drag & Drop handlers
+  const resetDrag = () => {
+    setDraggedTaskId(null);
+    setDragOverTaskId(null);
+  };
+
   const handleDragStart = (e: React.DragEvent, id: string) => {
+    if (!onReorderTasks) {
+      e.preventDefault();
+      return;
+    }
     setDraggedTaskId(id);
     e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", id);
   };
 
   const handleDragOver = (e: React.DragEvent, id: string) => {
+    if (!draggedTaskId || !onReorderTasks) return;
     e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
     if (id !== dragOverTaskId) {
       setDragOverTaskId(id);
     }
@@ -145,32 +164,24 @@ export const TasksView: React.FC<TasksViewProps> = ({
 
   const handleDrop = (e: React.DragEvent, targetId: string) => {
     e.preventDefault();
-    if (!draggedTaskId || draggedTaskId === targetId) {
-      setDraggedTaskId(null);
-      setDragOverTaskId(null);
-      return;
-    }
-
-    const draggedIndex = tasks.findIndex((t) => t.id === draggedTaskId);
-    const targetIndex = tasks.findIndex((t) => t.id === targetId);
-
-    if (draggedIndex !== -1 && targetIndex !== -1) {
-      const updated = [...tasks];
-      const [moved] = updated.splice(draggedIndex, 1);
-      updated.splice(targetIndex, 0, moved);
-
-      if (onReorderTasks) {
-        onReorderTasks(updated);
-      }
-    }
-
-    setDraggedTaskId(null);
-    setDragOverTaskId(null);
+    e.stopPropagation();
+    if (draggedTaskId) reorderVisibleTasks(draggedTaskId, targetId);
+    resetDrag();
   };
 
   const handleKanbanColumnDrop = (e: React.DragEvent, columnId: string) => {
     e.preventDefault();
-    if (!draggedTaskId) return;
+    e.stopPropagation();
+    const draggedTask = filteredTasks.find((task) => task.id === draggedTaskId);
+    if (!draggedTask || !onReorderTasks) {
+      resetDrag();
+      return;
+    }
+    const currentColumn = draggedTask.completed ? "done" : draggedTask.priority === "P1" ? "todo" : "inprogress";
+    if (currentColumn === columnId) {
+      resetDrag();
+      return;
+    }
 
     const updated = tasks.map((t) => {
       if (t.id === draggedTaskId) {
@@ -189,8 +200,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
       onReorderTasks(updated);
     }
 
-    setDraggedTaskId(null);
-    setDragOverTaskId(null);
+    resetDrag();
   };
 
   const handleQuickSubmit = (e: React.FormEvent) => {
@@ -216,7 +226,10 @@ export const TasksView: React.FC<TasksViewProps> = ({
     });
 
     setNewTaskTitle("");
+    setNewTaskCategory("Work");
+    setNewTaskPriority("P2");
     setIsCategoryManual(false);
+    newTaskInputRef.current?.focus();
   };
 
   const handleAiBreakdown = async (task: Task) => {
@@ -318,7 +331,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
       <form onSubmit={handleQuickSubmit} className={`p-4 rounded-2xl border shadow-sm flex flex-col gap-2 ${
         darkMode ? "bg-slate-900 border-slate-800" : "bg-white border-slate-200"
       }`}>
-        {newTaskTitle.trim() && quickInferred.matchedKeywords.length > 0 && (
+        {!isCategoryManual && newTaskTitle.trim() && quickInferred.matchedKeywords.length > 0 && (
           <div className="flex items-center gap-1.5 text-[10px] text-indigo-400 font-mono">
             <Sparkles className="w-3 h-3 text-indigo-400 animate-pulse" />
             <span className="flex items-center gap-1.5">
@@ -333,14 +346,17 @@ export const TasksView: React.FC<TasksViewProps> = ({
         )}
         <div className="flex flex-col sm:flex-row gap-3">
           <input
+            ref={newTaskInputRef}
+            aria-label="Task title"
             type="text"
             placeholder="Add a new priority task (e.g. Schedule doctor checkup, Pay rent, Cook dinner)..."
             value={newTaskTitle}
             onChange={(e) => handleTitleChange(e.target.value)}
-            className="flex-1 px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-transparent text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            className="min-w-0 flex-1 px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-transparent text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
           />
           <div className="flex items-center space-x-2">
             <select
+              aria-label="Task category"
               value={newTaskCategory}
               onChange={(e) => {
                 setNewTaskCategory(e.target.value as Category);
@@ -357,6 +373,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
               <option value="Fitness">Fitness</option>
             </select>
             <select
+              aria-label="Task priority"
               value={newTaskPriority}
               onChange={(e) => setNewTaskPriority(e.target.value as PriorityLevel)}
               className="px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-xs font-medium"
@@ -464,9 +481,10 @@ export const TasksView: React.FC<TasksViewProps> = ({
               return (
                 <div
                   key={t.id}
-                  draggable
-                  onDragStart={(e) => handleDragStart(e, t.id)}
                   onDragOver={(e) => handleDragOver(e, t.id)}
+                  onDragLeave={(e) => {
+                    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragOverTaskId(null);
+                  }}
                   onDrop={(e) => handleDrop(e, t.id)}
                   className={`p-4 rounded-2xl border transition-all duration-150 ${
                     isDragging ? "opacity-30 border-dashed border-indigo-500" : ""
@@ -480,11 +498,16 @@ export const TasksView: React.FC<TasksViewProps> = ({
                       : "bg-white border-slate-200 hover:border-slate-300"
                   }`}
                 >
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center space-x-3 min-w-0 flex-1">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-center space-x-3 min-w-0 w-full sm:w-auto flex-1">
                       {/* Drag Handle */}
                       <button
                         type="button"
+                        draggable={Boolean(onReorderTasks)}
+                        disabled={!onReorderTasks}
+                        onDragStart={(e) => handleDragStart(e, t.id)}
+                        onDragEnd={resetDrag}
+                        aria-label={`Drag to reorder ${t.title}`}
                         className="cursor-grab active:cursor-grabbing p-1 text-slate-400 hover:text-indigo-400 shrink-0"
                         title="Drag to reorder task"
                       >
@@ -498,16 +521,17 @@ export const TasksView: React.FC<TasksViewProps> = ({
                         {t.completed ? <CheckCircle2 className="w-5 h-5 fill-indigo-500 text-white" /> : <Circle className="w-5 h-5" />}
                       </button>
 
-                      <div 
-                        onClick={() => setQuickLookTask(t)}
-                        className="min-w-0 flex-1 cursor-pointer group"
-                        title="Click for Quick Look modal"
+                      <button
+                        type="button"
+                        onClick={() => setQuickLookTaskId(t.id)}
+                        className="min-w-0 flex-1 text-left cursor-pointer group"
+                        aria-label={`Quick look: ${t.title}`}
                       >
-                        <h3 className={`text-sm font-bold truncate group-hover:text-indigo-400 transition-colors ${t.completed ? "line-through text-slate-500" : ""}`}>
+                        <span className={`block text-sm font-bold truncate group-hover:text-indigo-400 transition-colors ${t.completed ? "line-through text-slate-500" : ""}`}>
                           {t.title}
-                        </h3>
+                        </span>
 
-                        <div className="flex flex-wrap items-center gap-2 mt-1.5">
+                        <span className="flex flex-wrap items-center gap-2 mt-1.5">
                           <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
                             t.priority === "P1" ? "bg-rose-500/20 text-rose-400" : t.priority === "P2" ? "bg-amber-500/20 text-amber-400" : "bg-slate-500/20 text-slate-400"
                           }`}>
@@ -528,14 +552,15 @@ export const TasksView: React.FC<TasksViewProps> = ({
                               {t.subtasks.filter((s) => s.completed).length}/{t.subtasks.length} subtasks
                             </span>
                           )}
-                        </div>
-                      </div>
+                        </span>
+                      </button>
                     </div>
 
                     {/* Up / Down Controls & Actions */}
-                    <div className="flex items-center space-x-1 shrink-0">
+                    <div className="flex flex-wrap items-center gap-1 shrink-0">
                       <button
-                        onClick={() => setQuickLookTask(t)}
+                        onClick={() => setQuickLookTaskId(t.id)}
+                        aria-label={`Quick look: ${t.title}`}
                         className="p-1.5 rounded-lg bg-slate-500/10 hover:bg-slate-500/20 text-slate-300 hover:text-white text-xs font-semibold flex items-center gap-1 transition-all"
                         title="Quick Look"
                       >
@@ -546,7 +571,8 @@ export const TasksView: React.FC<TasksViewProps> = ({
                       <div className="flex items-center space-x-0.5 mr-1 border-r border-slate-200 dark:border-slate-800 pr-1">
                         <button
                           onClick={() => handleMoveTask(t.id, "up")}
-                          disabled={idx === 0}
+                          disabled={!onReorderTasks || idx === 0}
+                          aria-label={`Move ${t.title} up`}
                           className="p-1 rounded-md text-slate-400 hover:text-indigo-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-20 disabled:hover:text-slate-400 transition-all"
                           title="Move Up"
                         >
@@ -554,7 +580,8 @@ export const TasksView: React.FC<TasksViewProps> = ({
                         </button>
                         <button
                           onClick={() => handleMoveTask(t.id, "down")}
-                          disabled={idx === filteredTasks.length - 1}
+                          disabled={!onReorderTasks || idx === filteredTasks.length - 1}
+                          aria-label={`Move ${t.title} down`}
                           className="p-1 rounded-md text-slate-400 hover:text-indigo-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-20 disabled:hover:text-slate-400 transition-all"
                           title="Move Down"
                         >
@@ -633,7 +660,12 @@ export const TasksView: React.FC<TasksViewProps> = ({
           ].map((col) => (
             <div
               key={col.id}
-              onDragOver={(e) => e.preventDefault()}
+              onDragOver={(e) => {
+                if (draggedTaskId && onReorderTasks) {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "move";
+                }
+              }}
               onDrop={(e) => handleKanbanColumnDrop(e, col.id)}
               className={`p-4 rounded-3xl border space-y-3 min-h-[280px] transition-all ${
                 darkMode ? "bg-slate-900/60 border-slate-800" : "bg-slate-100/50 border-slate-200"
@@ -650,8 +682,9 @@ export const TasksView: React.FC<TasksViewProps> = ({
                 {col.tasksList.map((t) => (
                   <div
                     key={t.id}
-                    draggable
+                    draggable={Boolean(onReorderTasks)}
                     onDragStart={(e) => handleDragStart(e, t.id)}
+                    onDragEnd={resetDrag}
                     className={`p-3.5 rounded-2xl border shadow-sm space-y-2 cursor-grab active:cursor-grabbing hover:border-indigo-500/50 transition-all ${
                       darkMode ? "bg-slate-900 border-slate-800" : "bg-white border-slate-200"
                     }`}
@@ -670,12 +703,14 @@ export const TasksView: React.FC<TasksViewProps> = ({
                       </button>
                     </div>
 
-                    <div 
-                      onClick={() => setQuickLookTask(t)}
-                      className="cursor-pointer group"
+                    <button
+                      type="button"
+                      onClick={() => setQuickLookTaskId(t.id)}
+                      className="w-full text-left cursor-pointer group"
+                      aria-label={`Quick look: ${t.title}`}
                     >
-                      <p className="text-xs font-bold line-clamp-2 group-hover:text-indigo-400 transition-colors">{t.title}</p>
-                    </div>
+                      <span className="text-xs font-bold line-clamp-2 group-hover:text-indigo-400 transition-colors">{t.title}</span>
+                    </button>
 
                     <div className="flex items-center justify-between text-[10px] text-slate-400 pt-1 border-t border-slate-200/30 dark:border-slate-800/60">
                       <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full inline-flex items-center gap-1 ${getCategoryBadgeStyle(t.category)}`}>
@@ -687,7 +722,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            setQuickLookTask(t);
+                            setQuickLookTaskId(t.id);
                           }}
                           className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-indigo-400 transition-colors"
                           title="Quick Look"
@@ -706,23 +741,15 @@ export const TasksView: React.FC<TasksViewProps> = ({
 
       {/* Quick Look Modal */}
       <TaskQuickLookModal
+        key={quickLookTask?.id ?? "closed"}
         task={quickLookTask}
         isOpen={Boolean(quickLookTask)}
-        onClose={() => setQuickLookTask(null)}
+        onClose={() => setQuickLookTaskId(null)}
         onToggleTask={onToggleTask}
         onToggleSubtask={onToggleSubtask}
         onDeleteTask={onDeleteTask}
         onAddSubtask={(taskId, title) => {
-          onAddSubtasksToTask(taskId, [{ id: `sub-${Date.now()}`, title, completed: false }]);
-          // Update local quickLookTask reference so modal updates live
-          setQuickLookTask((prev) =>
-            prev && prev.id === taskId
-              ? {
-                  ...prev,
-                  subtasks: [...prev.subtasks, { id: `sub-${Date.now()}`, title, completed: false }],
-                }
-              : prev
-          );
+          onAddSubtasksToTask(taskId, [{ id: `sub-${crypto.randomUUID()}`, title, completed: false }]);
         }}
         darkMode={darkMode}
       />

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Task } from "../types";
 import {
   X,
@@ -37,6 +37,20 @@ export const TaskQuickLookModal: React.FC<TaskQuickLookModalProps> = ({
   darkMode,
 }) => {
   const [newSubtaskTitle, setNewSubtaskTitle] = useState("");
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const subtaskInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!isOpen || !task) return;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    dialogRef.current?.focus();
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+  }, [isOpen, task?.id]);
 
   if (!isOpen || !task) return null;
 
@@ -45,6 +59,7 @@ export const TaskQuickLookModal: React.FC<TaskQuickLookModalProps> = ({
     if (!newSubtaskTitle.trim() || !onAddSubtask) return;
     onAddSubtask(task.id, newSubtaskTitle.trim());
     setNewSubtaskTitle("");
+    subtaskInputRef.current?.focus();
   };
 
   const priorityStyles = {
@@ -68,8 +83,42 @@ export const TaskQuickLookModal: React.FC<TaskQuickLookModalProps> = ({
   const subtaskProgress = totalSubtasksCount > 0 ? Math.round((completedSubtasksCount / totalSubtasksCount) * 100) : 0;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm animate-in fade-in duration-200">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm animate-in fade-in duration-200"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="task-quick-look-title"
+        tabIndex={-1}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            onClose();
+          }
+          if (event.key !== "Tab") return;
+          const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(
+            'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex="0"]'
+          ));
+          const first = controls[0];
+          const last = controls[controls.length - 1];
+          if (!first || !last) {
+            event.preventDefault();
+            return;
+          }
+          if (event.shiftKey && (document.activeElement === first || document.activeElement === event.currentTarget)) {
+            event.preventDefault();
+            last.focus();
+          } else if (!event.shiftKey && (document.activeElement === last || document.activeElement === event.currentTarget)) {
+            event.preventDefault();
+            first.focus();
+          }
+        }}
         className={`w-full max-w-xl rounded-3xl border shadow-2xl overflow-hidden flex flex-col max-h-[90vh] ${
           darkMode ? "bg-slate-900 border-slate-800 text-slate-100" : "bg-white border-slate-200 text-slate-900"
         }`}
@@ -85,6 +134,7 @@ export const TaskQuickLookModal: React.FC<TaskQuickLookModalProps> = ({
           </div>
 
           <button
+            aria-label="Close quick look"
             onClick={onClose}
             className="p-1.5 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-slate-200/50 dark:hover:bg-slate-800 transition-colors"
           >
@@ -108,8 +158,8 @@ export const TaskQuickLookModal: React.FC<TaskQuickLookModalProps> = ({
               )}
             </button>
 
-            <div className="flex-1">
-              <h2 className={`text-lg font-bold leading-snug ${task.completed ? "line-through text-slate-500" : ""}`}>
+            <div className="min-w-0 flex-1">
+              <h2 id="task-quick-look-title" className={`text-lg font-bold leading-snug break-words ${task.completed ? "line-through text-slate-500" : ""}`}>
                 {task.title}
               </h2>
 
@@ -210,19 +260,21 @@ export const TaskQuickLookModal: React.FC<TaskQuickLookModalProps> = ({
 
             <div className="space-y-2">
               {task.subtasks.map((st) => (
-                <div
+                <button
+                  type="button"
                   key={st.id}
+                  aria-pressed={st.completed}
                   onClick={() => onToggleSubtask(task.id, st.id)}
-                  className="flex items-center space-x-2.5 p-2.5 rounded-xl border border-slate-200/50 dark:border-slate-800/80 bg-slate-500/5 hover:bg-slate-500/10 cursor-pointer transition-all text-xs"
+                  className="w-full text-left flex items-center space-x-2.5 p-2.5 rounded-xl border border-slate-200/50 dark:border-slate-800/80 bg-slate-500/5 hover:bg-slate-500/10 cursor-pointer transition-all text-xs"
                 >
-                  <button className="text-indigo-400 shrink-0">
+                  <span className="text-indigo-400 shrink-0">
                     {st.completed ? (
                       <CheckCircle2 className="w-4 h-4 fill-indigo-500 text-white" />
                     ) : (
                       <Circle className="w-4 h-4 text-slate-400" />
                     )}
-                  </button>
-                  <span className={`flex-1 ${st.completed ? "line-through text-slate-500" : ""}`}>
+                  </span>
+                  <span className={`min-w-0 flex-1 break-words ${st.completed ? "line-through text-slate-500" : ""}`}>
                     {st.title}
                   </span>
                   {st.estimatedMinutes && (
@@ -230,7 +282,7 @@ export const TaskQuickLookModal: React.FC<TaskQuickLookModalProps> = ({
                       {st.estimatedMinutes}m
                     </span>
                   )}
-                </div>
+                </button>
               ))}
             </div>
 
@@ -238,11 +290,13 @@ export const TaskQuickLookModal: React.FC<TaskQuickLookModalProps> = ({
             {onAddSubtask && (
               <form onSubmit={handleAddSubtaskSubmit} className="flex gap-2 pt-1">
                 <input
+                  ref={subtaskInputRef}
+                  aria-label="Subtask title"
                   type="text"
                   placeholder="Add a subtask..."
                   value={newSubtaskTitle}
                   onChange={(e) => setNewSubtaskTitle(e.target.value)}
-                  className="flex-1 px-3 py-1.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-transparent text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  className="min-w-0 flex-1 px-3 py-1.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-transparent text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500"
                 />
                 <button
                   type="submit"
