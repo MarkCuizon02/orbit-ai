@@ -1,30 +1,17 @@
 import React, { useState, useMemo } from "react";
-import { BillItem } from "../types";
+import type { BillItem } from "../types";
+import { importDebtBills, isValidDebt, simulatePayoff, type DebtItem } from "../lib/debtPayoff";
 import { 
   Calculator, 
-  TrendingDown, 
   Zap, 
   Flame, 
   Snowflake, 
   Plus, 
   Trash2, 
   RefreshCw, 
-  Info, 
   CheckCircle2, 
-  ArrowRight,
-  ShieldAlert,
-  DollarSign,
-  PieChart,
   Sparkles
 } from "lucide-react";
-
-interface DebtItem {
-  id: string;
-  name: string;
-  balance: number;
-  apr: number; // percentage, e.g., 24%
-  minPayment: number;
-}
 
 interface DebtPaydownCalculatorCardProps {
   bills: BillItem[];
@@ -45,43 +32,30 @@ export const DebtPaydownCalculatorCard: React.FC<DebtPaydownCalculatorCardProps>
   const [newDebtApr, setNewDebtApr] = useState<number | "">(24);
   const [newDebtMinPayment, setNewDebtMinPayment] = useState<number | "">(1500);
   const [showAddForm, setShowAddForm] = useState(false);
+  const [importMessage, setImportMessage] = useState("");
 
-  // Initial list of debts
-  const [debts, setDebts] = useState<DebtItem[]>([
-    { id: "d1", name: "Credit Card A (BPI)", balance: 35000, apr: 24.0, minPayment: 1800 },
-    { id: "d2", name: "Personal Loan (BDO)", balance: 85000, apr: 14.5, minPayment: 3200 },
-    { id: "d3", name: "Store Installment Card", balance: 12000, apr: 18.0, minPayment: 1000 },
-  ]);
+  const [debts, setDebts] = useState<DebtItem[]>([]);
+  const eligibleBills = bills.filter((bill) => bill.category === "Debt" && bill.recurringFrequency === "Monthly");
+  const newDebtValues = {
+    name: newDebtName.trim(),
+    balance: Number(newDebtBalance),
+    apr: Number(newDebtApr),
+    minPayment: Number(newDebtMinPayment),
+  };
+  const canAddDebt = newDebtBalance !== "" && newDebtApr !== "" &&
+    newDebtMinPayment !== "" && isValidDebt(newDebtValues);
 
-  // Sync / Import debts from app's Bills list with 'Debt' category
   const handleImportBills = () => {
-    const debtBills = bills.filter((b) => b.category === "Debt");
-    if (debtBills.length === 0) return;
-
-    const imported: DebtItem[] = debtBills.map((b, idx) => ({
-      id: `imported-${Date.now()}-${idx}`,
-      name: b.name,
-      balance: b.amount * 10, // estimated balance baseline
-      apr: 21.0, // standard default credit APR
-      minPayment: Math.max(500, Math.round(b.amount)),
-    }));
-
-    setDebts((prev) => {
-      // Avoid exact name duplicates
-      const existingNames = new Set(prev.map((d) => d.name.toLowerCase()));
-      const filteredNew = imported.filter((d) => !existingNames.has(d.name.toLowerCase()));
-      return [...prev, ...filteredNew];
-    });
+    const nextDebts = importDebtBills(debts, bills);
+    setImportMessage(`${nextDebts.length - debts.length} monthly debt account(s) imported as estimates. Duplicates and invalid bills were skipped.`);
+    setDebts(nextDebts);
   };
 
   const handleAddDebt = () => {
-    if (!newDebtName.trim()) return;
+    if (!canAddDebt) return;
     const newDebt: DebtItem = {
-      id: `debt-${Date.now()}`,
-      name: newDebtName.trim(),
-      balance: Number(newDebtBalance) || 10000,
-      apr: Number(newDebtApr) || 18,
-      minPayment: Number(newDebtMinPayment) || 500,
+      id: `debt-${crypto.randomUUID()}`,
+      ...newDebtValues,
     };
     setDebts((prev) => [...prev, newDebt]);
     setNewDebtName("");
@@ -95,122 +69,12 @@ export const DebtPaydownCalculatorCard: React.FC<DebtPaydownCalculatorCardProps>
     setDebts((prev) => prev.filter((d) => d.id !== id));
   };
 
-  // Amortization Engine Simulator function
-  const simulatePayoff = (
-    debtList: DebtItem[],
-    strat: "avalanche" | "snowball",
-    monthlyExtra: number
-  ) => {
-    if (debtList.length === 0) {
-      return {
-        totalMonths: 0,
-        totalInterestPaid: 0,
-        totalPrincipal: 0,
-        payoffOrder: [],
-        monthByMonthHistory: [],
-      };
-    }
-
-    // Clone debts for mutation in loop
-    let activeDebts = debtList.map((d) => ({ ...d, currentBalance: d.balance }));
-    const totalPrincipal = debtList.reduce((acc, d) => acc + d.balance, 0);
-
-    let monthCount = 0;
-    let totalInterestPaid = 0;
-    const payoffOrder: { name: string; monthPaidOff: number; interestPaid: number }[] = [];
-    const maxMonthsLimit = 360; // 30-year safety ceiling
-
-    // Sort order based on strategy
-    const getTargetDebtIndex = (list: typeof activeDebts) => {
-      const unpaidIndices = list
-        .map((d, idx) => ({ idx, ...d }))
-        .filter((d) => d.currentBalance > 0.01);
-
-      if (unpaidIndices.length === 0) return -1;
-
-      if (strat === "avalanche") {
-        // Highest APR first
-        unpaidIndices.sort((a, b) => b.apr - a.apr);
-      } else {
-        // Lowest balance first (Snowball)
-        unpaidIndices.sort((a, b) => a.currentBalance - b.currentBalance);
-      }
-      return unpaidIndices[0].idx;
-    };
-
-    while (monthCount < maxMonthsLimit) {
-      const unpaidCount = activeDebts.filter((d) => d.currentBalance > 0.01).length;
-      if (unpaidCount === 0) break;
-
-      monthCount++;
-
-      // 1. Accrue monthly interest on remaining balances
-      activeDebts.forEach((d) => {
-        if (d.currentBalance > 0.01) {
-          const monthlyRate = d.apr / 100 / 12;
-          const interest = d.currentBalance * monthlyRate;
-          totalInterestPaid += interest;
-          d.currentBalance += interest;
-        }
-      });
-
-      // 2. Calculate minimum payments across all debts
-      let totalPoolAvailable = monthlyExtra;
-
-      // Apply minimum payments
-      activeDebts.forEach((d) => {
-        if (d.currentBalance > 0.01) {
-          const payAmt = Math.min(d.currentBalance, d.minPayment);
-          d.currentBalance -= payAmt;
-          if (d.currentBalance <= 0.01) {
-            d.currentBalance = 0;
-            payoffOrder.push({
-              name: d.name,
-              monthPaidOff: monthCount,
-              interestPaid: Math.round(totalInterestPaid),
-            });
-          }
-        }
-      });
-
-      // 3. Roll extra cash plus freed minimum payments onto priority target debt
-      let remainingExtra = totalPoolAvailable;
-      while (remainingExtra > 0) {
-        const targetIdx = getTargetDebtIndex(activeDebts);
-        if (targetIdx === -1) break;
-
-        const target = activeDebts[targetIdx];
-        const payAmt = Math.min(target.currentBalance, remainingExtra);
-        target.currentBalance -= payAmt;
-        remainingExtra -= payAmt;
-
-        if (target.currentBalance <= 0.01) {
-          target.currentBalance = 0;
-          if (!payoffOrder.some((p) => p.name === target.name)) {
-            payoffOrder.push({
-              name: target.name,
-              monthPaidOff: monthCount,
-              interestPaid: Math.round(totalInterestPaid),
-            });
-          }
-        }
-      }
-    }
-
-    return {
-      totalMonths: monthCount,
-      totalInterestPaid: Math.round(totalInterestPaid),
-      totalPrincipal,
-      payoffOrder,
-    };
-  };
-
   // Perform simulation calculations memoized
   const simulationResults = useMemo(() => {
     const selectedStratResult = simulatePayoff(debts, strategy, extraPayment);
     const snowballResult = simulatePayoff(debts, "snowball", extraPayment);
     const avalancheResult = simulatePayoff(debts, "avalanche", extraPayment);
-    const minOnlyResult = simulatePayoff(debts, "avalanche", 0);
+    const minOnlyResult = simulatePayoff(debts, "avalanche", 0, false);
 
     return {
       current: selectedStratResult,
@@ -234,10 +98,12 @@ export const DebtPaydownCalculatorCard: React.FC<DebtPaydownCalculatorCardProps>
 
   const getPayoffDateStr = (totalM: number) => {
     const date = new Date();
+    date.setDate(1);
     date.setMonth(date.getMonth() + totalM);
     return date.toLocaleDateString("en-US", { month: "short", year: "numeric" });
   };
 
+  const canCompare = debts.length > 0 && simulationResults.current.paidOff && simulationResults.minOnly.paidOff;
   const interestSavingsVsMinOnly = Math.max(
     0,
     simulationResults.minOnly.totalInterestPaid - simulationResults.current.totalInterestPaid
@@ -258,12 +124,12 @@ export const DebtPaydownCalculatorCard: React.FC<DebtPaydownCalculatorCardProps>
     >
       {/* Header Banner */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5 pb-4 border-b border-slate-800/40">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 min-w-0">
           <div className="p-3 rounded-2xl bg-amber-500/20 text-amber-400 border border-amber-500/30 shrink-0">
             <Calculator className="w-6 h-6 text-amber-400" />
           </div>
-          <div>
-            <div className="flex items-center gap-2">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
               <h2 className="font-extrabold text-base tracking-tight">
                 Debt Paydown Calculator & Strategy Engine
               </h2>
@@ -280,12 +146,32 @@ export const DebtPaydownCalculatorCard: React.FC<DebtPaydownCalculatorCardProps>
         {/* Sync from Bills Button */}
         <button
           onClick={handleImportBills}
-          className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/30 font-bold text-xs font-mono transition-all flex items-center justify-center gap-1.5 shrink-0"
+          disabled={eligibleBills.length === 0}
+          title="Import monthly debt bills as estimates"
+          className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-amber-300 border border-amber-500/30 font-bold text-xs font-mono transition-all flex items-center justify-center gap-1.5 shrink-0"
         >
           <RefreshCw className="w-3.5 h-3.5 text-amber-400" />
-          <span>Import Debt Bills ({bills.filter((b) => b.category === "Debt").length})</span>
+          <span>Import Debt Bills ({eligibleBills.length})</span>
         </button>
       </div>
+      <p className="text-xs text-slate-400 mb-3">
+        Monthly interest is APR / 12, rounded to cents, before payments. The monthly budget stays at
+        {" "}₱{(totalMinPayment + extraPayment).toLocaleString("en-US")}:
+        minimums first, then extra and freed payments to the selected strategy. No fees or rate changes.
+        Minimum-only does not roll freed payments forward.
+      </p>
+      <p className="text-xs text-slate-400 mb-3">
+        Imported monthly bills use an estimated balance of 10 times the bill amount and 21% APR.
+        The bill amount is the minimum payment. These are not lender balances; remove and replace estimates with actual figures.
+        Calculator accounts are not saved.
+      </p>
+      {importMessage && <p role="status" className="text-xs text-amber-400 mb-3">{importMessage}</p>}
+      {debts.length > 0 && !simulationResults.current.paidOff && (
+        <p role="status" className="text-xs text-amber-400 mb-3">
+          Not paid off within 30 years. Remaining balance: ₱{simulationResults.current.remainingBalance.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.
+          Increase the monthly payment. Interest shown covers only the 360-month simulation.
+        </p>
+      )}
 
       {/* Top Metrics Row */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
@@ -306,10 +192,10 @@ export const DebtPaydownCalculatorCard: React.FC<DebtPaydownCalculatorCardProps>
             Estimated Payoff Date
           </span>
           <span className="text-xl font-black font-mono text-emerald-400">
-            {getPayoffDateStr(simulationResults.current.totalMonths)}
+            {debts.length === 0 ? "No accounts" : simulationResults.current.paidOff ? getPayoffDateStr(simulationResults.current.totalMonths) : "Beyond 30 years"}
           </span>
           <span className="text-[10px] text-emerald-300/80 block mt-1 font-mono font-bold">
-            {formatYearsMonths(simulationResults.current.totalMonths)} ({simulationResults.current.totalMonths} mos)
+            {debts.length === 0 ? "No payoff estimate" : simulationResults.current.paidOff ? formatYearsMonths(simulationResults.current.totalMonths) : "360-month limit reached"}
           </span>
         </div>
 
@@ -321,7 +207,7 @@ export const DebtPaydownCalculatorCard: React.FC<DebtPaydownCalculatorCardProps>
             ₱{simulationResults.current.totalInterestPaid.toLocaleString("en-US")}
           </span>
           <span className="text-[10px] text-slate-400 block mt-1">
-            Over full amortization lifecycle
+            {simulationResults.current.paidOff ? "Over the estimated payoff period" : "Interest accrued in the first 30 years"}
           </span>
         </div>
 
@@ -330,10 +216,10 @@ export const DebtPaydownCalculatorCard: React.FC<DebtPaydownCalculatorCardProps>
             Interest Saved vs Min-Only
           </span>
           <span className="text-xl font-black font-mono text-emerald-400">
-            ₱{interestSavingsVsMinOnly.toLocaleString("en-US")}
+            {canCompare ? `₱${interestSavingsVsMinOnly.toLocaleString("en-US", { maximumFractionDigits: 2 })}` : "Not available"}
           </span>
           <span className="text-[10px] text-emerald-300 block mt-1 font-mono font-bold">
-            Shaves off {formatYearsMonths(monthsSavedVsMinOnly)}
+            {canCompare ? `Shaves off ${formatYearsMonths(monthsSavedVsMinOnly)}` : debts.length === 0 ? "No accounts to compare" : "Both plans must finish within 30 years"}
           </span>
         </div>
       </div>
@@ -356,7 +242,7 @@ export const DebtPaydownCalculatorCard: React.FC<DebtPaydownCalculatorCardProps>
             >
               <Flame className={`w-5 h-5 shrink-0 mt-0.5 ${strategy === "avalanche" ? "text-amber-400" : "text-slate-500"}`} />
               <div>
-                <div className="flex items-center gap-1.5">
+                <div className="flex flex-wrap items-center gap-1.5">
                   <span className="text-xs font-black">Debt Avalanche</span>
                   <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/30 text-amber-300 font-mono font-bold">
                     Mathematically Optimal
@@ -378,7 +264,7 @@ export const DebtPaydownCalculatorCard: React.FC<DebtPaydownCalculatorCardProps>
             >
               <Snowflake className={`w-5 h-5 shrink-0 mt-0.5 ${strategy === "snowball" ? "text-indigo-400" : "text-slate-500"}`} />
               <div>
-                <div className="flex items-center gap-1.5">
+                <div className="flex flex-wrap items-center gap-1.5">
                   <span className="text-xs font-black">Debt Snowball</span>
                   <span className="text-[9px] px-1.5 py-0.2 rounded bg-indigo-500/30 text-indigo-300 font-mono font-bold">
                     Psychological Wins
@@ -408,6 +294,7 @@ export const DebtPaydownCalculatorCard: React.FC<DebtPaydownCalculatorCardProps>
             </p>
             <input
               type="range"
+              aria-label="Extra monthly payment"
               min="0"
               max="20000"
               step="500"
@@ -456,6 +343,7 @@ export const DebtPaydownCalculatorCard: React.FC<DebtPaydownCalculatorCardProps>
                   <label className="block text-[10px] font-bold text-slate-400 mb-1">Account Title</label>
                   <input
                     type="text"
+                    aria-label="Account title"
                     placeholder="e.g. Citibank Visa Credit Card"
                     value={newDebtName}
                     onChange={(e) => setNewDebtName(e.target.value)}
@@ -467,6 +355,9 @@ export const DebtPaydownCalculatorCard: React.FC<DebtPaydownCalculatorCardProps>
                   <label className="block text-[10px] font-bold text-slate-400 mb-1">Current Outstanding Balance (₱)</label>
                   <input
                     type="number"
+                    aria-label="Outstanding balance"
+                    min="0.01"
+                    step="0.01"
                     placeholder="25000"
                     value={newDebtBalance}
                     onChange={(e) => setNewDebtBalance(e.target.value === "" ? "" : Number(e.target.value))}
@@ -478,6 +369,8 @@ export const DebtPaydownCalculatorCard: React.FC<DebtPaydownCalculatorCardProps>
                   <label className="block text-[10px] font-bold text-slate-400 mb-1">Interest Rate (APR % per year)</label>
                   <input
                     type="number"
+                    aria-label="Annual percentage rate"
+                    min="0"
                     placeholder="24"
                     step="0.1"
                     value={newDebtApr}
@@ -490,6 +383,9 @@ export const DebtPaydownCalculatorCard: React.FC<DebtPaydownCalculatorCardProps>
                   <label className="block text-[10px] font-bold text-slate-400 mb-1">Minimum Monthly Payment (₱)</label>
                   <input
                     type="number"
+                    aria-label="Minimum monthly payment"
+                    min="0.01"
+                    step="0.01"
                     placeholder="1500"
                     value={newDebtMinPayment}
                     onChange={(e) => setNewDebtMinPayment(e.target.value === "" ? "" : Number(e.target.value))}
@@ -500,11 +396,12 @@ export const DebtPaydownCalculatorCard: React.FC<DebtPaydownCalculatorCardProps>
 
               <button
                 onClick={handleAddDebt}
-                disabled={!newDebtName.trim()}
+                disabled={!canAddDebt}
                 className="w-full py-2 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-black text-xs font-mono transition-all"
               >
                 Save Account to Calculator
               </button>
+              {!canAddDebt && <p className="text-xs text-amber-400">Enter an account name, positive balance and payment, and APR of 0% or higher.</p>}
             </div>
           )}
 
@@ -512,12 +409,12 @@ export const DebtPaydownCalculatorCard: React.FC<DebtPaydownCalculatorCardProps>
           {debts.length === 0 ? (
             <div className="p-8 rounded-2xl bg-slate-950/40 border border-slate-800 text-center space-y-2">
               <CheckCircle2 className="w-8 h-8 text-emerald-400 mx-auto" />
-              <p className="text-xs font-bold text-slate-200">Zero Debt Recorded!</p>
-              <p className="text-[11px] text-slate-500">Add debt accounts or click "Import Debt Bills" above.</p>
+              <p className="text-xs font-bold text-slate-200">No debt accounts recorded</p>
+              <p className="text-[11px] text-slate-500">Payoff estimates are unavailable.</p>
             </div>
           ) : (
             <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1">
-              {debts.map((d, index) => {
+              {debts.map((d) => {
                 const percentOfTotal = totalBalance > 0 ? (d.balance / totalBalance) * 100 : 0;
 
                 return (
@@ -557,6 +454,7 @@ export const DebtPaydownCalculatorCard: React.FC<DebtPaydownCalculatorCardProps>
                       onClick={() => handleDeleteDebt(d.id)}
                       className="p-1.5 text-slate-500 hover:text-rose-400 transition-colors shrink-0"
                       title="Remove Account"
+                      aria-label={`Remove ${d.name}`}
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -573,7 +471,7 @@ export const DebtPaydownCalculatorCard: React.FC<DebtPaydownCalculatorCardProps>
             darkMode ? "bg-slate-950 border-slate-800" : "bg-slate-50 border-slate-200"
           }`}>
             <div>
-              <div className="flex items-center justify-between pb-3 mb-3 border-b border-slate-800">
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-3 mb-3 border-b border-slate-800">
                 <span className="font-extrabold text-xs text-slate-200 flex items-center gap-1.5">
                   <Sparkles className="w-4 h-4 text-amber-400" />
                   Strategy Comparison & Sequence
@@ -594,10 +492,10 @@ export const DebtPaydownCalculatorCard: React.FC<DebtPaydownCalculatorCardProps>
                     Avalanche (APR)
                   </span>
                   <span className="text-xs font-black font-mono text-amber-400 block">
-                    {formatYearsMonths(simulationResults.avalanche.totalMonths)}
+                    {debts.length === 0 ? "No estimate" : simulationResults.avalanche.paidOff ? formatYearsMonths(simulationResults.avalanche.totalMonths) : "Beyond 30 years"}
                   </span>
                   <span className="text-[10px] font-mono text-slate-400">
-                    ₱{simulationResults.avalanche.totalInterestPaid.toLocaleString("en-US")} int.
+                    ₱{simulationResults.avalanche.totalInterestPaid.toLocaleString("en-US")} {simulationResults.avalanche.paidOff ? "total int." : "int. to 30 years"}
                   </span>
                 </div>
 
@@ -610,10 +508,10 @@ export const DebtPaydownCalculatorCard: React.FC<DebtPaydownCalculatorCardProps>
                     Snowball (Balance)
                   </span>
                   <span className="text-xs font-black font-mono text-indigo-400 block">
-                    {formatYearsMonths(simulationResults.snowball.totalMonths)}
+                    {debts.length === 0 ? "No estimate" : simulationResults.snowball.paidOff ? formatYearsMonths(simulationResults.snowball.totalMonths) : "Beyond 30 years"}
                   </span>
                   <span className="text-[10px] font-mono text-slate-400">
-                    ₱{simulationResults.snowball.totalInterestPaid.toLocaleString("en-US")} int.
+                    ₱{simulationResults.snowball.totalInterestPaid.toLocaleString("en-US")} {simulationResults.snowball.paidOff ? "total int." : "int. to 30 years"}
                   </span>
                 </div>
               </div>
@@ -621,20 +519,18 @@ export const DebtPaydownCalculatorCard: React.FC<DebtPaydownCalculatorCardProps>
               {/* Payoff Sequence Order List */}
               <div className="space-y-2">
                 <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider block">
-                  Target Knockout Order:
+                  Simulated Payoff Sequence:
                 </span>
 
                 {debts.length === 0 ? (
                   <p className="text-xs text-slate-500">No active debts to order.</p>
                 ) : (
                   <div className="space-y-1.5 max-h-[180px] overflow-y-auto pr-1">
-                    {/* Sort debts according to chosen strategy priority order */}
-                    {[...debts]
-                      .sort((a, b) => strategy === "avalanche" ? b.apr - a.apr : a.balance - b.balance)
+                    {simulationResults.current.payoffOrder
                       .map((d, idx) => (
                         <div
                           key={d.id}
-                          className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-between text-xs"
+                          className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 flex flex-wrap gap-2 items-center justify-between text-xs"
                         >
                           <div className="flex items-center gap-2">
                             <span className="w-5 h-5 rounded-full bg-amber-500/20 text-amber-300 font-mono font-bold text-[10px] flex items-center justify-center shrink-0">
@@ -645,10 +541,11 @@ export const DebtPaydownCalculatorCard: React.FC<DebtPaydownCalculatorCardProps>
                             </span>
                           </div>
                           <span className="font-mono text-[10px] text-amber-400 font-bold">
-                            {strategy === "avalanche" ? `${d.apr}% APR` : `₱${d.balance.toLocaleString("en-US")}`}
+                            Month {d.monthPaidOff} · ₱{d.interestPaid.toLocaleString("en-US")} interest
                           </span>
                         </div>
                       ))}
+                    {!simulationResults.current.paidOff && <p className="text-xs text-slate-400">{debts.length - simulationResults.current.payoffOrder.length} account(s) remain unpaid at 30 years.</p>}
                   </div>
                 )}
               </div>
@@ -658,8 +555,9 @@ export const DebtPaydownCalculatorCard: React.FC<DebtPaydownCalculatorCardProps>
             <div className="mt-4 pt-3 border-t border-slate-800/80 text-[10px] text-slate-400 font-mono flex items-center gap-1.5">
               <Zap className="w-3.5 h-3.5 text-amber-400 shrink-0" />
               <span>
-                Adding <strong>+₱{extraPayment.toLocaleString("en-US")}</strong> extra per month saves{" "}
-                <strong className="text-emerald-400 font-bold">₱{interestSavingsVsMinOnly.toLocaleString("en-US")}</strong> in total interest!
+                {canCompare
+                  ? `This plan saves ₱${interestSavingsVsMinOnly.toLocaleString("en-US", { maximumFractionDigits: 2 })} versus minimum-only payments, including the effect of rolling freed minimums forward.`
+                  : "Total-interest savings are unavailable until both plans pay off within 30 years."}
               </span>
             </div>
           </div>
