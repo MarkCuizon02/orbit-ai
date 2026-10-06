@@ -810,6 +810,7 @@ export default function App() {
       {/* Quick Capture Command Palette */}
       <CommandPalette
         isOpen={isQuickAddOpen}
+        initialType={activeTab === "notes" ? "note" : undefined}
         onClose={() => setIsQuickAddOpen(false)}
         onAddTask={handleAddTask}
         onAddHabit={handleAddHabit}
